@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 const API = import.meta.env.VITE_BACKEND_URL || "";
 
@@ -70,21 +70,32 @@ function ProjectForm({ onCreated }) {
   const [orientation, setOrientation] = useState("");
   const [culture, setCulture] = useState("General Vastu");
   const [code, setCode] = useState("BBMP");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
 
   const create = async () => {
-    const body = {
-      title,
-      project_type: projectType,
-      site: { width: Number(siteWidth), height: Number(siteHeight) },
-      required_spaces: rooms,
-      adjacency_notes: adjacency || null,
-      orientation_notes: orientation || null,
-      cultural_tuning: culture,
-      municipal_code: code,
-    };
-    const res = await fetch(`${API}/api/projects`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    const data = await res.json();
-    onCreated(data.project_id);
+    try {
+      setSubmitting(true);
+      setError("");
+      const body = {
+        title,
+        project_type: projectType,
+        site: { width: Number(siteWidth), height: Number(siteHeight) },
+        required_spaces: rooms,
+        adjacency_notes: adjacency || null,
+        orientation_notes: orientation || null,
+        cultural_tuning: culture,
+        municipal_code: code,
+      };
+      const res = await fetch(`${API}/api/projects`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      if (!res.ok) throw new Error(`Create failed: ${res.status}`);
+      const data = await res.json();
+      onCreated(data.project_id);
+    } catch (e) {
+      setError(e.message || "Failed to create project");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -128,8 +139,11 @@ function ProjectForm({ onCreated }) {
           {["BBMP","BMC","GDC/MCD","National","None"].map(opt=> <option key={opt} value={opt}>{opt}</option>)}
         </select>
       </InputRow>
+      {error && <div className="text-sm text-rose-600 mb-2">{error}</div>}
       <div className="flex justify-end">
-        <button onClick={create} className="px-4 py-2 rounded bg-blue-600 text-white">Generate Plans</button>
+        <button disabled={submitting} onClick={create} className="px-4 py-2 rounded bg-blue-600 text-white disabled:opacity-60">
+          {submitting ? 'Creating…' : 'Generate Plans'}
+        </button>
       </div>
     </div>
   );
@@ -137,7 +151,9 @@ function ProjectForm({ onCreated }) {
 
 function PlanSVG({ svg }) {
   return (
-    <div className="w-full border rounded-lg overflow-hidden bg-white" dangerouslySetInnerHTML={{ __html: svg }} />
+    <div className="w-full border rounded-lg overflow-hidden bg-white">
+      <div className="w-full" style={{minHeight: 360}} dangerouslySetInnerHTML={{ __html: svg }} />
+    </div>
   );
 }
 
@@ -188,6 +204,21 @@ function EstimateTable({ estimate }) {
   );
 }
 
+function useBackendUrl() {
+  // Guard: if no env set, attempt to infer backend by switching port to 8000 on same host.
+  return useMemo(() => {
+    if (API) return API;
+    try {
+      const url = new URL(window.location.href);
+      // Replace front port (3000) with 8000; if no port, set 8000.
+      url.port = '8000';
+      return `${url.origin}`;
+    } catch {
+      return '';
+    }
+  }, []);
+}
+
 function Dashboard({ projectId }) {
   const [plans, setPlans] = useState([]);
   const [active, setActive] = useState(null);
@@ -195,42 +226,116 @@ function Dashboard({ projectId }) {
   const [compliance, setCompliance] = useState([]);
   const [estimate, setEstimate] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const backend = useBackendUrl();
+  const svgRef = useRef(null);
 
   const generate = async () => {
-    setLoading(true);
-    await fetch(`${API}/api/projects/${projectId}/generate`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ alternatives: 4 })});
-    const res = await fetch(`${API}/api/projects/${projectId}/plans`);
-    const data = await res.json();
-    setPlans(data);
-    if (data[0]) select(data[0].plan_id);
-    setLoading(false);
+    try {
+      setLoading(true);
+      setError("");
+      await fetch(`${backend}/api/projects/${projectId}/generate`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ alternatives: 4 })});
+      const res = await fetch(`${backend}/api/projects/${projectId}/plans`);
+      if (!res.ok) throw new Error(`Fetch plans failed: ${res.status}`);
+      const data = await res.json();
+      setPlans(data);
+      if (data[0]) select(data[0].plan_id, data);
+    } catch (e) {
+      setError(e.message || 'Generation failed');
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const select = async (planId) => {
-    setActive(planId);
-    const svgRes = await fetch(`${API}/api/projects/${projectId}/plans/${planId}/svg`);
-    const svgData = await svgRes.json();
-    setSvg(svgData.svg);
+  const select = async (planId, knownPlans = null) => {
+    try {
+      setActive(planId);
+      const svgRes = await fetch(`${backend}/api/projects/${projectId}/plans/${planId}/svg`);
+      const svgData = await svgRes.json();
+      setSvg(svgData.svg);
 
-    const compRes = await fetch(`${API}/api/projects/${projectId}/plans/${planId}/compliance`);
-    const compData = await compRes.json();
-    setCompliance(compData.items);
+      const compRes = await fetch(`${backend}/api/projects/${projectId}/plans/${planId}/compliance`);
+      const compData = await compRes.json();
+      setCompliance(compData.items);
 
-    const estRes = await fetch(`${API}/api/projects/${projectId}/plans/${planId}/estimate`);
-    const estData = await estRes.json();
-    setEstimate(estData);
+      const estRes = await fetch(`${backend}/api/projects/${projectId}/plans/${planId}/estimate`);
+      const estData = await estRes.json();
+      setEstimate(estData);
+
+      if (!knownPlans) {
+        const plansRes = await fetch(`${backend}/api/projects/${projectId}/plans`);
+        const plansData = await plansRes.json();
+        setPlans(plansData);
+      }
+    } catch (e) {
+      setError(e.message || 'Failed to load plan details');
+    }
   };
 
-  useEffect(() => { generate(); }, []);
+  const downloadSVG = () => {
+    if (!svg) return;
+    const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${active || 'plan'}.svg`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const downloadPNG = async () => {
+    if (!svg) return;
+    // Create an image from SVG string
+    const svgBlob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(svgBlob);
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      // Try to parse width/height from viewBox if present
+      const match = svg.match(/viewBox=\"(\d+(?:\.\d+)?) (\d+(?:\.\d+)?) (\d+(?:\.\d+)?) (\d+(?:\.\d+)?)\"/);
+      const w = match ? parseFloat(match[3]) : img.width || 1200;
+      const h = match ? parseFloat(match[4]) : img.height || 800;
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0,0,w,h);
+      ctx.drawImage(img, 0, 0, w, h);
+      canvas.toBlob((blob) => {
+        const dl = document.createElement('a');
+        dl.href = URL.createObjectURL(blob);
+        dl.download = `${active || 'plan'}.png`;
+        dl.click();
+        setTimeout(() => URL.revokeObjectURL(dl.href), 1000);
+      }, 'image/png');
+      URL.revokeObjectURL(url);
+    };
+    img.onerror = () => URL.revokeObjectURL(url);
+    img.src = url;
+  };
+
+  useEffect(() => { generate(); /* eslint-disable-next-line */ }, []);
 
   return (
     <div className="grid grid-cols-12 gap-5">
       <div className="col-span-12 lg:col-span-8 space-y-4">
         <div className="flex items-center justify-between">
           <h3 className="text-lg font-semibold text-slate-800">Floor Plan Output</h3>
-          <a className="text-sm text-blue-600 hover:underline" href={`${API}/api/projects/${projectId}/plans/${active}/bom.csv`} target="_blank">Export BOM (CSV)</a>
+          <div className="flex items-center gap-2">
+            <button onClick={generate} disabled={loading} className="px-3 py-1.5 rounded border bg-white hover:bg-slate-50 text-sm disabled:opacity-60">{loading ? 'Generating…' : 'Generate Alternatives'}</button>
+            <a className="text-sm text-blue-600 hover:underline" href={`${backend}/api/projects/${projectId}/plans/${active}/bom.csv`} target="_blank" rel="noreferrer">Export BOM (CSV)</a>
+          </div>
         </div>
-        {svg ? <PlanSVG svg={svg} /> : <div className="rounded-lg border bg-white p-6 text-slate-500">No plan yet.</div>}
+        {error && <div className="rounded border border-rose-300 bg-rose-50 text-rose-700 text-sm px-3 py-2">{error}</div>}
+        {svg ? <PlanSVG svg={svg} ref={svgRef} /> : (
+          <div className="rounded-lg border bg-white p-6 text-slate-500 min-h-[360px] grid place-items-center">
+            {loading ? 'Generating plans…' : 'No plan yet.'}
+          </div>
+        )}
+        <div className="flex items-center gap-2">
+          <button onClick={downloadSVG} disabled={!svg} className="px-3 py-1.5 rounded border bg-white hover:bg-slate-50 text-sm disabled:opacity-60">Download SVG</button>
+          <button onClick={downloadPNG} disabled={!svg} className="px-3 py-1.5 rounded border bg-white hover:bg-slate-50 text-sm disabled:opacity-60">Download PNG</button>
+        </div>
         <div>
           <div className="text-sm font-medium text-slate-700 mb-2">Alternative Layouts</div>
           <div className="flex gap-3 overflow-x-auto pb-2">
@@ -255,6 +360,7 @@ function Dashboard({ projectId }) {
 
 export default function App() {
   const [projectId, setProjectId] = useState(null);
+  const backend = useBackendUrl();
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-sky-50 to-indigo-50">
@@ -265,7 +371,7 @@ export default function App() {
             <p className="text-slate-600">Automated floor plans, compliance checks, and material estimates.</p>
           </div>
           <div className="flex gap-2">
-            <a className="text-sm text-blue-600 hover:underline" href={`${API}/test`} target="_blank">Backend Status</a>
+            <a className="text-sm text-blue-600 hover:underline" href={`${backend}/test`} target="_blank" rel="noreferrer">Backend Status</a>
           </div>
         </header>
 
